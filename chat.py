@@ -132,6 +132,7 @@ def handle_user_interaction(user_question):
 )
     # Search for relevant documents based on user's question
     docs = compression_retriever.get_relevant_documents(user_question)
+    st.write(docs)
     # print(docs)
     # print("*"*100)
     if docs:
@@ -201,7 +202,7 @@ def main():
                     # doc.extend(pdf_reader)   
                 
                 st.session_state.knowledgeBase = process_text(doc)
-                st.write(doc)
+                # st.write(doc)
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
