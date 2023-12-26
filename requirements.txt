@@ -1,4 +1,5 @@
 langchain
+tiktoken
 streamlit
 faiss-cpu
 openai==0.28.1
@@ -7,4 +8,5 @@ python-dotenv
 torch
 transformers
 sentence-transformers
-tiktoken
+cohere
+
