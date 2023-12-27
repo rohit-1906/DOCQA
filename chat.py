@@ -136,7 +136,7 @@ def handle_user_interaction(user_question):
     # print(docs)
     # print("*"*100)
     if docs:
-        #content_found = True
+        content_found = True
         # Run Question Answering model to find response
         # OpenAIModel = "gpt-3.5-turbo"
         # llm = ChatOpenAI(model=OpenAIModel, temperature=0.1, openai_api_key=load_openai_api_key())
@@ -146,26 +146,26 @@ def handle_user_interaction(user_question):
         )
         # print(st.session_state.conversation_history)
 
-        # if response:
-        #     # Calculate relevance score for the response
-        #     relevance_score = calculate_relevance_score(user_question, response)
-        #     relevant_responses.append({"response": response, "score": relevance_score})
+        if response:
+            # Calculate relevance score for the response
+            relevance_score = calculate_relevance_score(user_question, response)
+            relevant_responses.append({"response": response, "score": relevance_score})
 
-    # if not content_found:
-    #     st.write("No relevant information found in the uploaded PDFs.")
-    # elif relevant_responses:
-    #     # Get the most relevant response based on relevance score
-    #     most_relevant = max(relevant_responses, key=lambda x: x["score"])
-    #     # Store user query and assistant response in session state
-    #     #st.session_state.messages.append({"role": "user", "content": user_question, "response": most_relevant['response']})
-    #     # print( st.session_state.messages)
-    #     # print("***************")
-    #     assistant_response = f" \n\n{most_relevant['response']}"
-        st.session_state.messages.append({"role": "user", "content": user_question, "response": response})
+    if not content_found:
+        st.write("No relevant information found in the uploaded PDFs.")
+    elif relevant_responses:
+        # Get the most relevant response based on relevance score
+        most_relevant = max(relevant_responses, key=lambda x: x["score"])
+        # Store user query and assistant response in session state
+        #st.session_state.messages.append({"role": "user", "content": user_question, "response": most_relevant['response']})
+        # print( st.session_state.messages)
+        # print("***************")
+        assistant_response = f" \n\n{most_relevant['response']}"
+        
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             full_response = ""
-            assistant_response = response
+            assistant_response = assistant_response
             for chunk in assistant_response.split():
                 full_response += chunk + " "
                 message_placeholder.markdown(full_response + "▌")
