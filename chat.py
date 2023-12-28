@@ -101,6 +101,8 @@ def process_text(doc):
             for _doc in _sub_docs:
                 _doc.metadata["doc_id"] = _id
             sub_docs.extend(_sub_docs)
+
+        st.write(sub_docs)
         # sub_child_docs = []
         # for i, doc in enumerate(parent_docs):
         #     _id = doc_ids[i]
