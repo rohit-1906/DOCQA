@@ -4,7 +4,7 @@ from PyPDF2 import PdfReader
 from langchain.document_loaders import PyPDFLoader
 import streamlit as st
 # Import necessary modules from langchain
-from langchain.vectorstores import FAISS
+from langchain.vectorstores import Chroma
 from langchain.memory import ConversationBufferMemory
 from langchain.text_splitter import TokenTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings
@@ -21,6 +21,11 @@ from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import CohereRerank
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.storage import InMemoryByteStore
+import uuid
+from langchain.retrievers.multi_vector import MultiVectorRetriever
+
 # Set the LLM cache
 set_llm_cache(InMemoryCache())
 
@@ -72,19 +77,57 @@ if "llm" not in st.session_state and "chain" not in st.session_state:
     
 def process_text(doc):
     # Split text into chunks
-        text_splitter = TokenTextSplitter(
-            chunk_size=500,
+        parent_text_splitter = TokenTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=100,
+        )
+        child_text_splitter =  TokenTextSplitter(
+            chunk_size=300,
+            chunk_overlap=100,
+        )
+        sub_child_text_splitter =  TokenTextSplitter(
+            chunk_size=100,
             chunk_overlap=0,
         )
-        chunks = text_splitter.split_documents(doc)
+        parent_docs = parent_text_splitter.split_documents(doc)
+        
+
+        doc_ids = [str(uuid.uuid4()) for _ in parent_docs]
+
+        sub_docs = []
+        for i, doc in enumerate(parent_docs):
+            _id = doc_ids[i]
+            _sub_docs = child_text_splitter.split_documents([doc])
+            for _doc in _sub_docs:
+                _doc.metadata["doc_id"] = _id
+            sub_docs.extend(_sub_docs)
+        # sub_child_docs = []
+        # for i, doc in enumerate(parent_docs):
+        #     _id = doc_ids[i]
+        #     _sub_docs = sub_child_text_splitter.split_documents([doc])
+        #     for _doc in _sub_docs:
+        #         _doc.metadata["doc_id"] = _id
+        #     sub_docs.extend(_sub_docs) 
+        
         #print(1)
         # Create embeddings and knowledge base using FAISS
-        embeddings = OpenAIEmbeddings()
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-        knowledgeBase = FAISS.from_documents(chunks,embeddings)
+        vectorstore = Chroma(
+    collection_name="full_documents", embedding_function=embeddings
+)
 
-
-        return knowledgeBase
+        store = InMemoryByteStore()
+        id_key = "doc_id"
+        # The retriever (empty to start)
+        retriever = MultiVectorRetriever(
+            vectorstore=vectorstore,
+            byte_store=store,
+            id_key=id_key,
+        )
+        retriever.vectorstore.add_documents(sub_docs)
+        retriever.docstore.mset(list(zip(doc_ids, parent_docs)))
+        return retriever
 
 
 
@@ -94,7 +137,7 @@ def process_text(doc):
 # Function to calculate relevance score between question and response
 def calculate_relevance_score(question, response):
     # Use Sentence Transformers to encode question and response
-    model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
+    model = SentenceTransformer('all-MiniLM-L6-v2')
     question_embedding = model.encode(question, convert_to_tensor=True)
     response_embedding = model.encode(response, convert_to_tensor=True)
 
@@ -118,20 +161,21 @@ def display_conversation_history():
 
 # Function to handle user interaction
 def handle_user_interaction(user_question):
-    knowledgeBase = st.session_state.knowledgeBase
-    ret = knowledgeBase.as_retriever(
-    search_kwargs={"k": 20}
-)
+    retreiver = st.session_state.retriever
+#     ret = knowledgeBase.as_retriever(
+#     search_kwargs={"k": 20}
+# )
 
 
     content_found = False
     relevant_responses = []
     compressor = CohereRerank(cohere_api_key=os.getenv("COHERE_API_KEY"))
     compression_retriever = ContextualCompressionRetriever(
-    base_compressor=compressor, base_retriever=ret
+    base_compressor=compressor, base_retriever=retreiver
 )
     # Search for relevant documents based on user's question
     docs = compression_retriever.get_relevant_documents(user_question)
+
     st.write(docs)
     # print(docs)
     # print("*"*100)
@@ -182,7 +226,7 @@ def main():
         pdf_files = st.sidebar.file_uploader(' ', type='pdf', accept_multiple_files=True)
         if pdf_files:
             st.session_state.uploaded_files = pdf_files
-            if "knowledgeBase" not in st.session_state:
+            if "retriever" not in st.session_state:
     # Process text from PDFs to create knowledge base if it doesn't exist
                 doc = []
                 for pdf in st.session_state.uploaded_files:
@@ -201,7 +245,7 @@ def main():
                 # st.write(doc) 
                     # doc.extend(pdf_reader)   
                 
-                st.session_state.knowledgeBase = process_text(doc)
+                st.session_state.retriever = process_text(doc)
                 # st.write(doc)
 
     for message in st.session_state.messages:
