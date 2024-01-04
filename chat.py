@@ -1,30 +1,25 @@
 import os
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
-from langchain.document_loaders import PyPDFLoader
 import streamlit as st
-# Import necessary modules from langchain
 from langchain.vectorstores import FAISS
 from langchain.memory import ConversationBufferMemory
-from langchain.text_splitter import TokenTextSplitter
+from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.llms import OpenAI
-from langchain.embeddings import OpenAIEmbeddings
 from langchain.chat_models import ChatOpenAI
 from langchain.chains.question_answering import load_qa_chain
-from langchain.callbacks import get_openai_callback
 from sentence_transformers import SentenceTransformer, util
 from langchain.globals import set_llm_cache
 from langchain.cache import InMemoryCache
-from langchain.docstore.document import Document
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import CohereRerank
 from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
-# Set the LLM cache
+from langchain.tools.retriever import create_retriever_tool
+from langchain import hub
+from langchain.agents import AgentExecutor, create_openai_tools_agent,ZeroShotAgent
+# Set up LLM caching using an in-memory cache
 set_llm_cache(InMemoryCache())
 
-# Streamlit app title
+# Title for the Streamlit app
 st.title("PDF Summarizer, QA & Chat")
 
 # Initialize session state variables if they don't exist
@@ -37,78 +32,92 @@ if "uploaded_files" not in st.session_state:
 if "conversation_history" not in st.session_state:
     st.session_state.conversation_history = []
 
-# if "chain" not in st.session_state:
-#     st.session_state.chain = None
+# if "tools"  not in st.session_state:
+#     st.session_state.tools = None
 
-def qa_chain(llm):
-    
-    # template = """"
-    prompt = PromptTemplate(
-    input_variables=["docs", "question", "history"],
-    template="""Given the following documents and historical context, provide an answer to the question:
-    Documents: {docs}
-    Historical Context: {history}
-    Question: {question}
-    
-    Please refer to any relevant information from the previous response to answer the current question.
-    """
-)
-    # memory = ConversationBufferMemory(memory_key="chat_history")
-    # Load QA chain
-    chain1 = LLMChain(llm=llm,prompt=prompt)
-    #print("chain")
-    return chain1
 
-if "llm" not in st.session_state and "chain" not in st.session_state:
-    # Load OpenAI API key
-    dotenv_path = "openai.env"
-    load_dotenv(dotenv_path)
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    # Initialize OpenAI model
-    OpenAIModel = "gpt-4"
-    st.session_state.llm = ChatOpenAI(model=OpenAIModel, temperature=0)
-    st.session_state.chain = qa_chain(st.session_state.llm)
+# Check if chain exists in session state, if not, initialize it
+if "chain" not in st.session_state:
 
-    
-def process_text(doc):
-    # Split text into chunks
-        text_splitter = TokenTextSplitter(
-            chunk_size=500,
-            chunk_overlap=0,
+    def load_openai_api_key():
+        dotenv_path = "openai.env"
+        load_dotenv(dotenv_path)
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            raise ValueError(f"Unable to retrieve OPENAI_API_KEY from {dotenv_path}")
+        return openai_api_key
+
+    # Initialize components including ChatOpenAI model and QA chain
+    def initialize_components(tools):
+
+        OpenAIModel = "gpt-3.5-turbo-16k"
+        #memory = ConversationBufferMemory(memory_key="conversation_history")
+        
+        llm = ChatOpenAI(model=OpenAIModel, temperature=0.1, openai_api_key=load_openai_api_key())
+               
+        prefix = """Have a conversation with a human, answering the following questions as best you can. You have access to the following tools:"""
+        suffix = """Begin!"
+
+        {chat_history}
+        Question: {input}
+        {agent_scratchpad}"""
+
+        prompt = ZeroShotAgent.create_prompt(
+            tools,
+            prefix=prefix,
+            suffix=suffix,
+            input_variables=["input", "chat_history", "agent_scratchpad"],
         )
-        chunks = text_splitter.split_documents(doc)
-        #print(1)
-        # Create embeddings and knowledge base using FAISS
-        embeddings = OpenAIEmbeddings()
-
-        knowledgeBase = FAISS.from_documents(chunks,embeddings)
-
-
-        return knowledgeBase
+        llm_chain = LLMChain(llm=llm, prompt=prompt)
+        agent = ZeroShotAgent(llm_chain=llm_chain, tools=tools, verbose=True)
+        memory = ConversationBufferMemory(memory_key="chat_history")
+        agent_chain = AgentExecutor.from_agent_and_tools(
+        agent=agent, tools=tools, verbose=True, memory=memory,handle_parsing_errors=True)
 
 
+        return agent_chain
 
-# Function to process text from PDFs and create a knowledge base
+    # Perform initialization and store the chain in session state
+    
+    # print("Initialization complete.")
 
+# process text extracted from PDFs and create a knowledge base
+def process_text(text):
+    text_splitter = CharacterTextSplitter(
+        separator="\n",
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len
+    )
+    chunks = text_splitter.split_text(text)
 
-# Function to calculate relevance score between question and response
+    embeddings = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')
+    knowledgeBase = FAISS.from_texts(chunks, embeddings)
+    retriever = knowledgeBase.as_retriever()
+    tool = create_retriever_tool(
+    retriever,
+    "document_retrieval_tool",
+    "Retrieves relevant documents based on user queries.",
+)
+    tools = [tool]
+    return tools
+
+# relevance score between a question and response
 def calculate_relevance_score(question, response):
-    # Use Sentence Transformers to encode question and response
     model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
     question_embedding = model.encode(question, convert_to_tensor=True)
     response_embedding = model.encode(response, convert_to_tensor=True)
 
-    # Calculate cosine similarity for relevance score
     cosine_score = util.pytorch_cos_sim(question_embedding, response_embedding)
     relevance_score = cosine_score.item()
 
     return relevance_score
 
-# Function to store conversation history
+# store conversation history in session state
 def store_conversation(user_query, assistant_response):
+    st.session_state.conversation_history.append({"Question_number": len(st.session_state.conversation_history),"user_query": user_query, "assistant_response": assistant_response})
 
-    st.session_state.conversation_history.append({"Question_number": len(st.session_state.conversation_history), "user_query": user_query, "assistant_response": assistant_response})
-# Function to display conversation history in sidebar
+# display conversation history
 def display_conversation_history():
     st.sidebar.subheader("Conversation History")
     for conv in st.session_state.conversation_history:
@@ -116,52 +125,18 @@ def display_conversation_history():
         st.sidebar.markdown(f"**Assistant:** {conv['assistant_response']}")
         st.sidebar.markdown("---")
 
-# Function to handle user interaction
-def handle_user_interaction(user_question):
-    knowledgeBase = st.session_state.knowledgeBase
-    ret = knowledgeBase.as_retriever(
-    search_kwargs={"k": 20}
-)
+# Function to handle user interaction and responses
 
 
+def handle_user_interaction(pdf_files, user_question):
     content_found = False
     relevant_responses = []
-    compressor = CohereRerank(cohere_api_key=os.getenv("COHERE_API_KEY"))
-    compression_retriever = ContextualCompressionRetriever(
-    base_compressor=compressor, base_retriever=ret
-)
-    # Search for relevant documents based on user's question
-    docs = compression_retriever.get_relevant_documents(user_question)
-    st.write(docs)
-    # print(docs)
-    # print("*"*100)
-    if docs:
-        content_found = True
-        # Run Question Answering model to find response
-        # OpenAIModel = "gpt-3.5-turbo"
-        # llm = ChatOpenAI(model=OpenAIModel, temperature=0.1, openai_api_key=load_openai_api_key())
-        # chain = qa_chain(llm, chain_type='stuff')
-        response = st.session_state.chain.run(
-            {"docs": docs, "question": user_question,"history":st.session_state.conversation_history}
-        )
-        # print(st.session_state.conversation_history)
+    # st.session_state.chain = initialize_components(st.session_state.tools)
+    agent_executor = st.session_state.chain
 
-        if response:
-            # Calculate relevance score for the response
-            relevance_score = calculate_relevance_score(user_question, response)
-            relevant_responses.append({"response": response, "score": relevance_score})
-
-    if not content_found:
-        st.write("No relevant information found in the uploaded PDFs.")
-    elif relevant_responses:
-        # Get the most relevant response based on relevance score
-        most_relevant = max(relevant_responses, key=lambda x: x["score"])
-        # Store user query and assistant response in session state
-        #st.session_state.messages.append({"role": "user", "content": user_question, "response": most_relevant['response']})
-        # print( st.session_state.messages)
-        # print("***************")
-        assistant_response = f" \n\n{most_relevant['response']}"
-        
+    response = agent_executor.run(input=user_question)
+    assistant_response = response
+    if response:
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             full_response = ""
@@ -172,47 +147,51 @@ def handle_user_interaction(user_question):
             message_placeholder.markdown(full_response)
         st.session_state.messages.append({"role": "assistant", "content": assistant_response})
         store_conversation(user_question, assistant_response)
-    else:
-        st.write("I couldn't find any relevant information about your question in the uploaded PDFs.")
 
-# Streamlit app
+    # if docs:
+    #     content_found = True
+    #     response = st.session_state.chain.run(input_documents=docs, question=user_question)
+
+    #     if response:
+    #         relevance_score = calculate_relevance_score(user_question, response)
+    #         relevant_responses.append({"response": response, "score": relevance_score})
+
+    # if not content_found:
+    #     st.write("No relevant information found in the uploaded PDFs.")
+    # elif relevant_responses:
+    #     most_relevant = max(relevant_responses, key=lambda x: x["score"])
+    #     st.session_state.messages.append({"role": "user", "content": user_question})
+    #     st.session_state.messages.append({"role": "assistant", "content": most_relevant['response']})
+    #     store_conversation(user_question, most_relevant['response'])
+    # else:
+    #     st.write("I couldn't find any relevant information about your question in the uploaded PDFs.")
+
+
+# Main function for the Streamlit app
 def main():
-    # Interface for uploading files and displaying conversation history
     with st.sidebar.expander("Upload your PDF Documents"):
         pdf_files = st.sidebar.file_uploader(' ', type='pdf', accept_multiple_files=True)
         if pdf_files:
             st.session_state.uploaded_files = pdf_files
-            if "knowledgeBase" not in st.session_state:
-    # Process text from PDFs to create knowledge base if it doesn't exist
-                doc = []
-                for pdf in st.session_state.uploaded_files:
-                    text = ""
-                    i = 0
+            if "tools" not in st.session_state:
+                text = ""
+                for pdf in pdf_files:
                     pdf_reader = PdfReader(pdf)
                     for page in pdf_reader.pages:
                         text += page.extract_text()
-                        i+=1
-                        metadata = {
-                            "filename": pdf.name,
-                            "page_no": i
-                        }
-                        doc.append(Document(page_content=text, metadata=metadata))
-                        
-                # st.write(doc) 
-                    # doc.extend(pdf_reader)   
-                
-                st.session_state.knowledgeBase = process_text(doc)
-                # st.write(doc)
+
+                tools = process_text(text)
+                st.session_state.tools = tools
+                chain = initialize_components(st.session_state.tools)
+                st.session_state.chain = chain
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    display_conversation_history()  # Show conversation history in sidebar
+    display_conversation_history()
 
-    # User input
-    if prompt := st.chat_input(
-            "First, read all the documents. Then, find the relevant answer from the uploaded files. If the answer is in multiple files, please provide a single answer that is the most relevant."):
+    if prompt := st.chat_input("Ask me anything about the uploaded documents."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -223,14 +202,12 @@ def main():
         if pdf_files and user_question:
             # st.session_state.messages = [message for message in st.session_state.messages if
             #                              message["role"] != "assistant"]
-            # print(st.session_state.messages)
-            handle_user_interaction(user_question)
+            handle_user_interaction(pdf_files, user_question)
 
-            # for message in st.session_state.conversation_history:
+            # for message in st.session_state.messages:
             #     if message["role"] == "assistant":
             #         with st.chat_message("assistant"):
             #             st.markdown(message["content"])
 
-# Execute the main function if this is the main script
 if __name__ == '__main__':
     main()
